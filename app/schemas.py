@@ -1,4 +1,5 @@
-from typing import List, Literal, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -26,3 +27,40 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=10000)
     history: List[ChatMessage] = Field(default_factory=list)
     context: AiContext = Field(default_factory=AiContext)
+    conversationId: Optional[str] = Field(default=None, max_length=128)
+
+
+class NoteGenerationRequest(BaseModel):
+    context: AiContext = Field(default_factory=AiContext)
+    conversationId: Optional[str] = Field(default=None, max_length=128)
+
+
+class TaskResponse(BaseModel):
+    taskId: str
+    status: Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED"]
+
+
+class NoteTaskResponse(TaskResponse):
+    result: Optional[str] = None
+    error: Optional[str] = None
+
+
+class LearningEvent(BaseModel):
+    eventType: str = Field(..., max_length=64)
+    resourceType: Optional[str] = Field(default=None, max_length=64)
+    resourceId: Optional[int] = None
+    durationSeconds: Optional[int] = None
+    extraJson: Optional[Any] = None
+    occurredAt: Optional[datetime] = None
+
+
+class ProfileAnalysisRequest(BaseModel):
+    events: List[LearningEvent] = Field(default_factory=list, max_length=200)
+
+
+class ProfileAnalysisResponse(BaseModel):
+    ability: Dict[str, Any] = Field(default_factory=dict)
+    weakPoints: List[Dict[str, Any]] = Field(default_factory=list)
+    codingStyle: Dict[str, Any] = Field(default_factory=dict)
+    summaryMd: str = ""
+    learningSummaryMd: str = ""
