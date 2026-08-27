@@ -1,0 +1,8 @@
+{
+  "corpus_id": "development-v1",
+  "purpose": "development smoke only; not representative and not a release corpus",
+  "documents": [
+    {"source_id": "knowledge:article-1:chapter-1", "text": "线程池用于复用线程、控制并发数量，并减少频繁创建线程带来的开销。", "metadata": {"document_type": "chapter", "article_id": 1, "chapter_id": 1, "corpus_version": "development-v1"}},
+    {"source_id": "knowledge:problem-1", "text": "两数之和：给定整数数组 nums 和目标值 target，在数组中找出和为目标值的两个下标。", "metadata": {"document_type": "problem", "problem_id": 1, "corpus_version": "development-v1"}}
+  ]
+}

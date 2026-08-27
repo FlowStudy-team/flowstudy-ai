@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
 from langchain_core.chat_history import InMemoryChatMessageHistory
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 from langchain_openai import ChatOpenAI
@@ -16,6 +16,10 @@ from langchain_openai import ChatOpenAI
 from .prompt import build_system_prompt
 from .schemas import AiContext, ChatMessage, LearningEvent, ProfileAnalysisResponse
 from .core_conversation_client import CoreConversationClient
+from .agent import AgentLoop, compact_messages
+from .agent.trace import AgentTrace
+from .retrieval import QdrantRetriever, memory_scope, render_hits
+from .eval_trace import emit as emit_eval_trace
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +79,11 @@ def _context_text(context: AiContext) -> str:
     return "\n".join(lines) or "No learning context was supplied."
 
 
-def build_learning_tools(context: AiContext) -> list[StructuredTool]:
+def build_learning_tools(
+        context: AiContext,
+        knowledge: QdrantRetriever | None = None,
+        memory: QdrantRetriever | None = None,
+        scope: str | None = None) -> list[StructuredTool]:
     """Build read-only, request-scoped tools.
 
     Until Core internal APIs are available, tools expose only the authorized
@@ -97,6 +105,16 @@ def build_learning_tools(context: AiContext) -> list[StructuredTool]:
         ]
         return "\n".join(matches) or f"No context matched keyword: {keyword}"
 
+    async def search_learning_knowledge(query: str, top_k: int = 3) -> str:
+        if knowledge is None:
+            return "Knowledge retrieval is not configured for this environment."
+        return render_hits(await knowledge.search(query, top_k=top_k))
+
+    async def search_learning_memory(query: str, top_k: int = 3) -> str:
+        if memory is None or scope is None:
+            return "Long-term memory retrieval is not configured for this conversation."
+        return render_hits(await memory.search(query, top_k=top_k, filter_={"scope": scope}))
+
     return [
         StructuredTool.from_function(
             func=get_current_learning_context,
@@ -108,24 +126,42 @@ def build_learning_tools(context: AiContext) -> list[StructuredTool]:
             name="search_current_learning_context",
             description="Search the current authorized learning context by a keyword.",
         ),
+        StructuredTool.from_function(
+            coroutine=search_learning_knowledge,
+            name="search_learning_knowledge",
+            description="Search published FlowStudy learning material and return cited source chunks.",
+        ),
+        StructuredTool.from_function(
+            coroutine=search_learning_memory,
+            name="search_learning_memory",
+            description="Search only this user's prior learning conversations and return cited memories.",
+        ),
     ]
 
 
 class LangChainAIService:
     def __init__(self, memory: ConversationMemoryStore | None = None) -> None:
-        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        api_key = os.environ.get("AI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY", "")
         if not api_key:
-            raise RuntimeError("DEEPSEEK_API_KEY environment variable is not set")
+            raise RuntimeError("AI_API_KEY or DEEPSEEK_API_KEY environment variable is not set")
 
-        self.model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+        self.model = os.environ.get("AI_MODEL") or os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
         self.memory = memory or ConversationMemoryStore()
         self.core_conversations = CoreConversationClient()
+        self.knowledge_retriever = QdrantRetriever("knowledge_chunks") if os.environ.get("QDRANT_ENABLED", "false").lower() == "true" else None
+        self.memory_retriever = QdrantRetriever("memory_messages") if os.environ.get("QDRANT_ENABLED", "false").lower() == "true" else None
         self.llm = ChatOpenAI(
             api_key=api_key,
-            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+            base_url=os.environ.get("AI_BASE_URL") or os.environ.get(
+                "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
+            ),
             model=self.model,
-            temperature=0.2,
+            temperature=float(os.environ.get("AI_TEMPERATURE", "0.2")),
+            max_tokens=int(os.environ.get("AI_MAX_TOKENS", "4096")),
             streaming=True,
+        )
+        self.agent_loop = AgentLoop(
+            max_rounds=int(os.environ.get("AI_AGENT_MAX_ROUNDS", str(MAX_TOOL_ROUNDS)))
         )
 
     async def stream_chat(
@@ -135,6 +171,7 @@ class LangChainAIService:
         context: AiContext,
         conversation_id: str | None,
         authorization: str | None = None,
+        eval_case_id: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         if authorization:
             if not conversation_id:
@@ -148,7 +185,9 @@ class LangChainAIService:
             persisted_history = []
 
         conversation_id = conversation_id or str(uuid.uuid4())
-        tools = build_learning_tools(context)
+        user_id = await self.core_conversations.identity(authorization) if authorization else None
+        scope = memory_scope(user_id, conversation_id)
+        tools = build_learning_tools(context, self.knowledge_retriever, self.memory_retriever, scope)
         prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", build_system_prompt(context)),
@@ -164,60 +203,36 @@ class LangChainAIService:
             for item in history[-MAX_HISTORY_MESSAGES:]
         ]
         request_history = stored_history or history_source
-        messages = prompt.format_messages(history=request_history, question=user_message)
+        messages = prompt.format_messages(
+            history=compact_messages(request_history, MAX_HISTORY_MESSAGES),
+            question=user_message,
+        )
         model_with_tools = self.llm.bind_tools(tools)
-        tool_round = 0
-        initial_response: AIMessage | None = None
 
         yield StreamEvent(type="meta", conversation_id=conversation_id)
 
-        while tool_round < MAX_TOOL_ROUNDS:
-            response = await model_with_tools.ainvoke(messages)
-            messages.append(response)
-            tool_calls = getattr(response, "tool_calls", []) or []
-            if not tool_calls:
-                initial_response = response
-                break
-
-            tool_round += 1
-            for tool_call in tool_calls:
-                tool_name = str(tool_call.get("name", "unknown"))
-                tool = next((item for item in tools if item.name == tool_name), None)
-                if tool is None:
-                    tool_result = f"Unknown tool: {tool_name}"
-                else:
-                    tool_result = str(await tool.ainvoke(tool_call.get("args", {})))
-                messages.append(
-                    ToolMessage(
-                        content=tool_result,
-                        tool_call_id=tool_call.get("id", str(uuid.uuid4())),
-                    )
-                )
-                yield StreamEvent(type="tool", name=tool_name)
-
         final_text = ""
-        if initial_response is not None:
-            content = initial_response.content
-            if isinstance(content, list):
-                content = "".join(
-                    str(item.get("text", "")) for item in content if isinstance(item, dict)
-                )
-            final_text = str(content or "")
-            if final_text:
-                yield StreamEvent(type="token", content=final_text)
-        else:
-            async for chunk in self.llm.astream(messages):
-                content = chunk.content
-                if isinstance(content, list):
-                    content = "".join(
-                        str(item.get("text", "")) for item in content if isinstance(item, dict)
-                    )
-                if not content:
-                    continue
-                final_text += str(content)
-                yield StreamEvent(type="token", content=str(content))
+        trace = AgentTrace()
+        async for event in self.agent_loop.run(messages, model_with_tools, tools, trace):
+            if event.type == "tool":
+                yield StreamEvent(type="tool", name=event.name)
+            elif event.type == "answer":
+                final_text = event.content or ""
+                if final_text:
+                    yield StreamEvent(type="token", content=final_text)
 
         self.memory.append(conversation_id, user_message, final_text)
+        if self.memory_retriever is not None:
+            try:
+                await self.memory_retriever.upsert([
+                    (f"{conversation_id}:user:{uuid.uuid4()}", user_message, {"scope": scope, "conversation_id": conversation_id, "role": "user"}),
+                    (f"{conversation_id}:assistant:{uuid.uuid4()}", final_text, {"scope": scope, "conversation_id": conversation_id, "role": "assistant"}),
+                ])
+            except Exception as exc:
+                logger.warning("Long-term memory persistence unavailable: %s", exc)
+        trace_data = trace.finish()
+        logger.info("agent_trace conversation_id=%s trace=%s", conversation_id, trace_data)
+        emit_eval_trace(eval_case_id, trace_data, final_text)
         if authorization and conversation_id.isdigit():
             await self.core_conversations.append(
                 conversation_id,

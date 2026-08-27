@@ -1,0 +1,34 @@
+{
+  "dataset_id": "flowstudy-golden-v1",
+  "label_policy": "manual-content-and-backend-dual-signoff-required",
+  "cases": [
+    {
+      "id": "context-read-001",
+      "request": {"message": "请读取当前题目的输入输出要求", "context": {"problemTitle": "两数之和", "problemDescription": "给定整数数组 nums 和目标值 target，找出两个下标。"}},
+      "expected_tools": [{"name": "get_current_learning_context", "arguments": {}}],
+      "required_evidence": ["problem"],
+      "source": "flowstudy-infra/mysql/init/01-init.sql#fs_problem:1"
+    },
+    {
+      "id": "context-search-002",
+      "request": {"message": "在当前上下文中查找 target", "context": {"problemDescription": "给定数组 nums 和目标值 target"}},
+      "expected_tools": [{"name": "search_current_learning_context", "arguments": {"keyword": "target"}}],
+      "required_evidence": ["target"],
+      "source": "flowstudy-infra/mysql/init/01-init.sql#fs_problem:1"
+    },
+    {
+      "id": "knowledge-search-003",
+      "request": {"message": "从课程资料中解释线程池为什么能减少线程创建开销", "context": {}},
+      "expected_tools": [{"name": "search_learning_knowledge", "arguments": {"query": "线程池 减少 创建 开销", "top_k": 3}}],
+      "required_evidence": ["knowledge:article-1:chapter-1"],
+      "source": "flowstudy-infra/mysql/init/01-init.sql#fs_chapter:1"
+    },
+    {
+      "id": "memory-search-004",
+      "request": {"message": "我之前在哪个并发概念上卡住过？", "context": {}},
+      "expected_tools": [{"name": "search_learning_memory", "arguments": {"query": "并发 概念", "top_k": 3}}],
+      "required_evidence": ["memory:manual-fixture-001"],
+      "source": "manual fixture; replace with anonymized integration snapshot before real run"
+    }
+  ]
+}

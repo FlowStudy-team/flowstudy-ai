@@ -30,7 +30,10 @@ def _sse(data: dict) -> str:
 
 
 @router.post("/ai/chat")
-async def chat(request: ChatRequest, authorization: str | None = Header(default=None)):
+async def chat(
+        request: ChatRequest,
+        authorization: str | None = Header(default=None),
+        x_eval_case_id: str | None = Header(default=None)):
     async def event_stream():
         try:
             ai_service = _get_ai_service()
@@ -40,6 +43,7 @@ async def chat(request: ChatRequest, authorization: str | None = Header(default=
                 request.context,
                 request.conversationId,
                 authorization,
+                x_eval_case_id,
             ):
                 payload = {"type": event.type}
                 if event.content is not None:
