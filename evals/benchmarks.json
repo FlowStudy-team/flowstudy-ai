@@ -1,0 +1,7 @@
+{
+  "bfcl_v4": {"status": "external_model_conformance", "source": "https://github.com/EnlightenedAI/BFCL", "runner": "use upstream evaluator against the configured OpenAI-compatible model; do not execute benchmark functions in FlowStudy"},
+  "beir": {"status": "retriever_integration_pending_corpus_snapshot", "source": "https://github.com/beir-cellar/beir", "runner": "run the upstream evaluator against the Qdrant retriever after the controlled corpus snapshot is provisioned"},
+  "longmemeval": {"status": "memory_integration_pending_controlled_target", "source": "https://github.com/xiaowu0162/LongMemEval", "runner": "report deterministic evidence recall separately from its upstream LLM-judged answer score"},
+  "tau2_bench": {"status": "not_applicable", "reason": "FlowStudy does not implement tau2 airline/retail transaction domains"},
+  "swe_bench_verified": {"status": "not_applicable", "reason": "FlowStudy does not expose file patch or sandboxed repository execution tools"}
+}

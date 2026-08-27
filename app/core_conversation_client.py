@@ -47,6 +47,23 @@ class CoreConversationClient:
         logger.warning("Core conversation creation failed: status=%s body=%s", response.status_code, response.text[:500])
         return None
 
+    async def identity(self, authorization: str) -> str | None:
+        """Return an authenticated subject without exposing it to the model."""
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(
+                    f"{self.base_url}/api/v1/ai/identity",
+                    headers=self._headers(authorization),
+                )
+        except httpx.HTTPError as exc:
+            logger.warning("Core identity unavailable: %s", exc)
+            return None
+        if not response.is_success:
+            logger.warning("Core identity failed: status=%s", response.status_code)
+            return None
+        data = response.json().get("data") or {}
+        return str(data["userId"]) if data.get("userId") is not None else None
+
     async def messages(self, conversation_id: str, authorization: str) -> list[ChatMessage]:
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
